@@ -30,7 +30,7 @@ graph TD
 - Dynamic scaling of n8n worker containers based on queue length
 - Configurable scaling thresholds and limits
 - Redis queue monitoring
-- Docker Compose-based deployment
+- Docker Compose based deployment
 - Health checks for all services
 
 ## Prerequisites
@@ -103,11 +103,18 @@ The system includes:
 - Docker health checks for all services
 - Detailed logging from autoscaler
 
+## Updating
+
+To update type these three commands in your terminal:
+- docker compose down
+- docker compose build --no-cache
+- docker compose up
+
 ## Troubleshooting
 
-- Check container logs: `docker-compose logs [service]`
-- Verify Redis connection: `docker-compose exec redis redis-cli ping`
-- Check queue length manually: `docker-compose exec redis redis-cli LLEN bull:jobs:wait`
+- Check container logs: `docker compose logs [service]`
+- Verify Redis connection: `docker compose exec redis redis-cli ping`
+- Check queue length manually: `docker compose exec redis redis-cli LLEN bull:jobs:wait`
 
 Webhook URL example:
 Webhooks use your cloudflare subdomain name not local host, example:
