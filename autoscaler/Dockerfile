@@ -28,8 +28,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM python:3.9-slim
 WORKDIR /app
 
+# Install Docker CLI and dependencies in the final stage
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && \
+    apt-get install -y docker-ce-cli && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy from builder
-COPY --from=builder /usr/bin/docker /usr/bin/docker
 COPY --from=builder /root/.docker/cli-plugins/ /usr/local/lib/docker/cli-plugins/
 COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
 
