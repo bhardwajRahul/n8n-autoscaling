@@ -1,3 +1,6 @@
+12/17/25 - This Repo has not yet been updated to n8n v2.0.  Update coming soon.  
+
+
 Now includes cloudflared. Configure on cloudflare.com and paste your token in the .env file.  
 
 for step by step instructions follow this guide: https://www.reddit.com/r/n8n/comments/1l9mi6k/major_update_to_n8nautoscaling_build_step_by_step/
