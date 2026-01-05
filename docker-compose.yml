@@ -3,7 +3,6 @@ volumes:
   redis_data:
   n8n_main:
   n8n_webhook:
-  traefik_data:
 
 networks:
   n8n-network:
@@ -45,14 +44,32 @@ x-n8n: &service-n8n
     - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
     - DB_POSTGRESDB_USER=${POSTGRES_USER}
     - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
-    # Task Runner config
+    # Task Runner config (n8n 2.0 external mode)
     - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS}
+    - N8N_RUNNERS_ENABLED=true
+    - N8N_RUNNERS_MODE=external
+    - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
     - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
-    - N8N_TASK_BROKER_URL=${N8N_TASK_BROKER_URL}
-    - N8N_COMMAND_RESPONSE_URL=${N8N_COMMAND_RESPONSE_URL}
-    - N8N_TASK_BROKER_PORT=${N8N_TASK_BROKER_PORT}
-    - NODE_FUNCTION_ALLOW_EXTERNAL=ajv,ajv-formats,puppeteer
-    - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    - N8N_RUNNERS_ALLOW_PROTOTYPE_MUTATION=true
+    - N8N_RUNNERS_INSECURE_MODE=true
+
+# Task runner base configuration for n8n 2.0
+x-task-runner: &service-task-runner
+  build:
+    context: .
+    dockerfile: Dockerfile.runner
+  restart: unless-stopped
+  networks:
+    - n8n-network
+    - shark
+  environment:
+    - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+    - N8N_RUNNERS_MAX_CONCURRENCY=${N8N_RUNNERS_MAX_CONCURRENCY}
+    - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=${N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT}
+    - NODE_FUNCTION_ALLOW_EXTERNAL=${NODE_FUNCTION_ALLOW_EXTERNAL}
+    - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+    - N8N_RUNNERS_ALLOW_PROTOTYPE_MUTATION=true
+    - N8N_RUNNERS_INSECURE_MODE=true
 
 services:
   cloudflared:
@@ -63,24 +80,6 @@ services:
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-
-  traefik:
-    image: traefik:v2.10
-    restart: unless-stopped
-    networks:
-      - n8n-network
-    command:
-      - "--api=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.n8n_ui.address=:8082"
-      - "--entrypoints.n8n_webhooks.address=:8083"
-    ports:
-      - "8082:8082"
-      - "8083:8083"
-    volumes:
-      - traefik_data:/letsencrypt
-      - /var/run/docker.sock:/var/run/docker.sock:ro
 
   redis:
     image: redis:7-alpine
@@ -124,8 +123,8 @@ services:
   n8n:
     <<: *service-n8n
     ports:
-      - "5678:5678"
-      - "5679:5679"
+      - "${TAILSCALE_IP}:5678:5678"
+      - "${TAILSCALE_IP}:5679:5679"
     volumes:
       - n8n_main:/n8n
     depends_on:
@@ -142,17 +141,26 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.n8n-ui.rule=Host(`${N8N_HOST}`)"
-      - "traefik.http.routers.n8n-ui.entrypoints=n8n_ui"
-      - "traefik.http.routers.n8n-webhooks.rule=Host(`${N8N_WEBHOOK}`)"
-      - "traefik.http.routers.n8n-webhooks.entrypoints=n8n_webhooks"
-      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  # Task runner for main n8n instance (n8n 2.0 requirement)
+  n8n-task-runner:
+    <<: *service-task-runner
+    environment:
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+      - N8N_RUNNERS_MAX_CONCURRENCY=${N8N_RUNNERS_MAX_CONCURRENCY}
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=${N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT}
+      - NODE_FUNCTION_ALLOW_EXTERNAL=${NODE_FUNCTION_ALLOW_EXTERNAL}
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+      - N8N_RUNNERS_ALLOW_PROTOTYPE_MUTATION=true
+      - N8N_RUNNERS_INSECURE_MODE=true
+    depends_on:
+      n8n:
+        condition: service_healthy
 
   n8n-webhook:
     <<: *service-n8n
-    command: sh /webhook
+    command: webhook
     volumes:
       - n8n_webhook:/n8n
     depends_on:
@@ -168,7 +176,7 @@ services:
   n8n-worker:
     <<: *service-n8n
     stop_grace_period: 5m
-    command: sh /worker
+    command: worker
     volumes:
       - n8n_main:/n8n
     depends_on:
@@ -186,6 +194,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Task runner sidecar for workers (n8n 2.0 requirement)
+  # Must be scaled 1:1 with n8n-worker
+  n8n-worker-runner:
+    <<: *service-task-runner
+    environment:
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n-worker:5679
+      - N8N_RUNNERS_MAX_CONCURRENCY=${N8N_RUNNERS_MAX_CONCURRENCY}
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=${N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT}
+      - NODE_FUNCTION_ALLOW_EXTERNAL=${NODE_FUNCTION_ALLOW_EXTERNAL}
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+      - N8N_RUNNERS_ALLOW_PROTOTYPE_MUTATION=true
+      - N8N_RUNNERS_INSECURE_MODE=true
+    depends_on:
+      n8n-worker:
+        condition: service_healthy
 
   redis-monitor:
     build:
@@ -224,6 +249,7 @@ services:
       - QUEUE_NAME_PREFIX=${QUEUE_NAME_PREFIX}
       - QUEUE_NAME=${QUEUE_NAME}
       - N8N_WORKER_SERVICE_NAME=${N8N_WORKER_SERVICE_NAME} # Service name in this docker-compose file
+      - N8N_WORKER_RUNNER_SERVICE_NAME=${N8N_WORKER_RUNNER_SERVICE_NAME} # Task runner sidecar (n8n 2.0)
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} # Crucial: Should match your project name
       - COMPOSE_FILE_PATH=/app/docker-compose.yml # Path to compose file in mounted project
       - MIN_REPLICAS=${MIN_REPLICAS}

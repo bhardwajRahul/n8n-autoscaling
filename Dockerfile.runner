@@ -1,0 +1,57 @@
+# Multi-stage build to add dependencies to n8n runners
+# This works around the issue where n8nio/runners v2.1.0+ removed apk
+
+# Stage 1: Build dependencies in Alpine (must match n8nio/runners base version)
+FROM alpine:3.23 AS builder
+
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    ffmpeg \
+    git \
+    openssh-client \
+    graphicsmagick
+
+# Stage 2: Copy to runners image
+FROM n8nio/runners:latest
+
+USER root
+
+# Copy all libraries from builder (chromium has many dependencies)
+COPY --from=builder /usr/lib/ /usr/lib/
+COPY --from=builder /usr/share/fonts/ /usr/share/fonts/
+
+# Copy binaries from builder
+COPY --from=builder /usr/bin/chromium-browser /usr/bin/chromium-browser
+COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
+COPY --from=builder /usr/bin/ffprobe /usr/bin/ffprobe
+COPY --from=builder /usr/bin/git /usr/bin/git
+COPY --from=builder /usr/bin/gm /usr/bin/gm
+
+# Create symlink for chromium-browser wrapper script
+RUN ln -sf /usr/lib/chromium/chromium /usr/bin/chromium
+
+# Install npm packages in the task runner's node_modules directory
+WORKDIR /opt/runners/task-runner-javascript
+RUN /usr/local/bin/node /usr/local/lib/node_modules/corepack/dist/corepack.js pnpm add \
+    ajv \
+    ajv-formats \
+    puppeteer-core@22.15.0
+
+# Copy custom task runner config that:
+# - Removes --disable-proto=delete flag (allows puppeteer to work)
+# - Allowlists puppeteer-core and other packages
+# - Sets PUPPETEER_EXECUTABLE_PATH in env-overrides
+COPY n8n-task-runners.json /etc/n8n-task-runners.json
+RUN chmod 644 /etc/n8n-task-runners.json
+
+# Set Puppeteer to use system Chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+USER runner
+WORKDIR /home/runner

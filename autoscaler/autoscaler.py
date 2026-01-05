@@ -19,6 +19,7 @@ QUEUE_NAME_PREFIX = os.getenv('QUEUE_NAME_PREFIX')
 QUEUE_NAME = os.getenv('QUEUE_NAME')
 
 N8N_WORKER_SERVICE_NAME = os.getenv('N8N_WORKER_SERVICE_NAME')
+N8N_WORKER_RUNNER_SERVICE_NAME = os.getenv('N8N_WORKER_RUNNER_SERVICE_NAME', 'n8n-worker-runner')  # n8n 2.0 task runner sidecar
 COMPOSE_PROJECT_NAME = os.getenv('COMPOSE_PROJECT_NAME') # e.g., "n8n-workers"
 COMPOSE_FILE_PATH = os.getenv('COMPOSE_FILE_PATH') # Path inside this container
 
@@ -137,6 +138,48 @@ def scale_service(service_name, replicas, compose_file, project_name):
         logging.error("docker-compose command not found. Ensure it's installed in the autoscaler container and in PATH.")
         return False
 
+
+def scale_worker_with_runner(replicas, compose_file, project_name):
+    """Scales both the n8n worker and its task runner sidecar together (n8n 2.0 requirement)."""
+    logging.info(f"Scaling worker and task runner to {replicas} replicas each...")
+
+    # Scale both services in a single command for atomicity
+    if not project_name:
+        logging.error("COMPOSE_PROJECT_NAME is not set. Cannot execute docker-compose scale.")
+        return False
+
+    command = [
+        "docker",
+        "compose",
+        "-f", compose_file,
+        "--project-name", project_name,
+        "--project-directory", "/app",
+        "up",
+        "-d",
+        "--no-deps",
+        "--scale", f"{N8N_WORKER_SERVICE_NAME}={replicas}",
+        "--scale", f"{N8N_WORKER_RUNNER_SERVICE_NAME}={replicas}",
+        N8N_WORKER_SERVICE_NAME,
+        N8N_WORKER_RUNNER_SERVICE_NAME
+    ]
+    logging.info(f"Executing scaling command: {' '.join(command)}")
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        logging.info(f"Scale command stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+             logging.warning(f"Scale command stderr: {result.stderr.strip()}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error scaling worker+runner to {replicas}:")
+        logging.error(f"  Command: {' '.join(e.cmd)}")
+        logging.error(f"  Return Code: {e.returncode}")
+        logging.error(f"  Stdout: {e.stdout.strip()}")
+        logging.error(f"  Stderr: {e.stderr.strip()}")
+        return False
+    except FileNotFoundError:
+        logging.error("docker-compose command not found. Ensure it's installed in the autoscaler container and in PATH.")
+        return False
+
 def main():
     global last_scale_time
     
@@ -178,13 +221,13 @@ def main():
             if queue_len > SCALE_UP_QUEUE_THRESHOLD and current_reps < MAX_REPLICAS:
                 new_replicas = min(current_reps + 1, MAX_REPLICAS) # Scale one by one for now
                 logging.info(f"Condition met for SCALE UP. Queue: {queue_len} > {SCALE_UP_QUEUE_THRESHOLD}. Replicas: {current_reps} < {MAX_REPLICAS}.")
-                if scale_service(N8N_WORKER_SERVICE_NAME, new_replicas, COMPOSE_FILE_PATH, COMPOSE_PROJECT_NAME):
+                if scale_worker_with_runner(new_replicas, COMPOSE_FILE_PATH, COMPOSE_PROJECT_NAME):
                     last_scale_time = current_time
                     scaled = True
             elif queue_len < SCALE_DOWN_QUEUE_THRESHOLD and current_reps > MIN_REPLICAS:
                 new_replicas = max(current_reps - 1, MIN_REPLICAS) # Scale one by one
                 logging.info(f"Condition met for SCALE DOWN. Queue: {queue_len} < {SCALE_DOWN_QUEUE_THRESHOLD}. Replicas: {current_reps} > {MIN_REPLICAS}.")
-                if scale_service(N8N_WORKER_SERVICE_NAME, new_replicas, COMPOSE_FILE_PATH, COMPOSE_PROJECT_NAME):
+                if scale_worker_with_runner(new_replicas, COMPOSE_FILE_PATH, COMPOSE_PROJECT_NAME):
                     last_scale_time = current_time
                     scaled = True
             
