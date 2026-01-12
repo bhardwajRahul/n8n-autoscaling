@@ -6,7 +6,7 @@ A Docker-based autoscaling solution for n8n workflow automation platform. Dynami
 
 Tested with hundreds of simultaneous executions running on an 8 core 16gb ram VPS.
 
-Includes Puppeteer and Chromium built-in for pro level scraping from the n8n code node, works better than the community nodes.
+Includes Puppeteer and Playwright with Chromium built-in for pro level scraping from the n8n code node. Stealth plugins included for bot detection evasion.
 
 Simple install, just clone the files + docker compose up
 
@@ -59,8 +59,10 @@ graph TD
 - Redis queue monitoring
 - Docker Compose based deployment
 - Health checks for all services
-- Puppeteer/Chromium for web scraping in Code nodes
-- External npm packages (ajv, puppeteer-core, etc.)
+- Puppeteer and Playwright with Chromium for web scraping in Code nodes
+- Stealth plugins for bot detection evasion
+- External npm packages (ajv, puppeteer-core, playwright-core, etc.)
+- Example workflows ready to import
 
 ## Prerequisites
 
@@ -118,7 +120,7 @@ graph TD
 | `N8N_RUNNERS_MODE` | Task runner mode | external |
 | `N8N_RUNNERS_AUTH_TOKEN` | Auth token for runners | (set your own) |
 | `N8N_RUNNERS_MAX_CONCURRENCY` | Max concurrent tasks per runner | 5 |
-| `NODE_FUNCTION_ALLOW_EXTERNAL` | Allowed npm packages in Code nodes | ajv,puppeteer-core,... |
+| `NODE_FUNCTION_ALLOW_EXTERNAL` | Allowed npm packages in Code nodes | ajv,puppeteer-core,playwright-core,... |
 
 ### Timeout Configuration
 
@@ -143,7 +145,22 @@ The autoscaler:
 
 ## Adding External Packages
 
-To add npm packages for use in Code nodes:
+The following packages are pre-installed and ready to use in Code nodes:
+
+| Package | Description |
+|---------|-------------|
+| `puppeteer-core` | Browser automation (Puppeteer) |
+| `puppeteer-extra` | Puppeteer with plugin support |
+| `puppeteer-extra-plugin-stealth` | Bot detection evasion |
+| `playwright-core` | Browser automation (Playwright) |
+| `playwright-extra` | Playwright with plugin support |
+| `ajv` | JSON schema validation |
+| `ajv-formats` | Additional AJV formats |
+| `moment` | Date/time manipulation |
+
+### Adding More Packages
+
+To add additional npm packages:
 
 1. Edit `Dockerfile.runner` and add packages to the pnpm install:
    ```dockerfile
@@ -156,7 +173,7 @@ To add npm packages for use in Code nodes:
 
 2. Edit `n8n-task-runners.json` and add your package to the allowlist:
    ```json
-   "NODE_FUNCTION_ALLOW_EXTERNAL": "moment,ajv,ajv-formats,puppeteer-core,puppeteer,your-package-here"
+   "NODE_FUNCTION_ALLOW_EXTERNAL": "moment,ajv,ajv-formats,puppeteer-core,playwright-core,your-package-here"
    ```
 
 3. Rebuild:
@@ -242,6 +259,7 @@ https://webhook.yourdomain.com/webhook/your-webhook-id
 ├── n8n-task-runners.json     # Task runner launcher config (security settings, allowed packages)
 ├── .env.example              # Example environment configuration
 ├── .env                      # Your configuration (git-ignored)
+├── examples/                 # Example n8n workflows (Puppeteer/Playwright)
 ├── autoscaler/
 │   ├── Dockerfile            # Autoscaler container
 │   └── autoscaler.py         # Scaling logic
@@ -255,12 +273,70 @@ The `n8n-task-runners.json` file controls security settings for the JavaScript t
 
 | Setting | Description |
 |---------|-------------|
-| `NODE_ENV=test` | Disables prototype freezing (required for puppeteer) |
+| `NODE_ENV=test` | Disables prototype freezing (required for puppeteer/playwright) |
 | `NODE_FUNCTION_ALLOW_EXTERNAL` | Comma-separated list of allowed npm packages |
 | `NODE_FUNCTION_ALLOW_BUILTIN` | Allowed Node.js built-in modules |
 | `PUPPETEER_EXECUTABLE_PATH` | Path to chromium binary |
+| `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` | Path to chromium binary for Playwright |
 
-**Note:** The default config removes sandbox restrictions to allow puppeteer and libraries like AJV that use `new Function()`. If you don't need these, you can restore the original security settings from the n8nio/runners image.
+**Note:** The default config removes sandbox restrictions to allow puppeteer/playwright and libraries like AJV that use `new Function()`. If you don't need these, you can restore the original security settings from the n8nio/runners image.
+
+## Example Workflows
+
+The `examples/` folder contains ready-to-import n8n workflows demonstrating browser automation:
+
+| File | Description |
+|------|-------------|
+| `puppeteer-screenshot.json` | Take screenshots with Puppeteer |
+| `puppeteer-scrape.json` | Scrape Hacker News with Puppeteer |
+| `puppeteer-stealth.json` | Bot detection evasion test |
+| `playwright-screenshot.json` | Take screenshots with Playwright |
+| `playwright-scrape.json` | Scrape Hacker News with Playwright |
+| `playwright-pdf.json` | Generate PDFs from web pages |
+| `playwright-stealth.json` | Bot detection evasion test |
+
+Import via: **Workflows** > **Add Workflow** > **Import from File**
+
+### Quick Example (Puppeteer)
+
+```javascript
+const puppeteer = require('puppeteer-core');
+
+const browser = await puppeteer.launch({
+  executablePath: '/usr/bin/chromium-browser',
+  headless: true,
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+});
+
+const page = await browser.newPage();
+await page.goto('https://example.com');
+const title = await page.title();
+await browser.close();
+
+return [{ json: { title } }];
+```
+
+### Quick Example (Playwright with Stealth)
+
+```javascript
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
+chromium.use(StealthPlugin());
+
+const browser = await chromium.launch({
+  executablePath: '/usr/bin/chromium-browser',
+  headless: true,
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+});
+
+const page = await browser.newPage();
+await page.goto('https://example.com');
+const title = await page.title();
+await browser.close();
+
+return [{ json: { title } }];
+```
 
 ## License
 
