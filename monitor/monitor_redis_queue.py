@@ -1,6 +1,11 @@
 import redis
 import time
 import os
+import logging
+
+# --- Logging Setup ---
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s')
 
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
@@ -14,10 +19,10 @@ def get_redis_connection():
     try:
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
         r.ping()
-        print(f"Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+        logging.info(f"Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
         return r
     except redis.exceptions.ConnectionError as e:
-        print(f"Error connecting to Redis: {e}")
+        logging.error(f"Error connecting to Redis: {e}")
         return None
 
 def get_queue_length(r_conn, queue_name_prefix, queue_name):
@@ -58,7 +63,7 @@ def get_queue_length(r_conn, queue_name_prefix, queue_name):
             key_to_check_legacy = f"{queue_name_prefix}:{queue_name}"
             length = r_conn.llen(key_to_check_legacy)
             if length is not None:
-                print(f"Note: Using legacy key pattern '{key_to_check_legacy}' for queue length.")
+                logging.debug(f"Using legacy key pattern '{key_to_check_legacy}' for queue length.")
                 key_to_check = key_to_check_legacy # update for logging
             else:
                  # If neither exists, it might be 0 or an issue.
@@ -66,33 +71,41 @@ def get_queue_length(r_conn, queue_name_prefix, queue_name):
                 key_to_check_v4 = f"{queue_name_prefix}:{queue_name}:waiting"
                 length = r_conn.llen(key_to_check_v4)
                 if length is not None:
-                    print(f"Note: Using BullMQ v4+ key pattern '{key_to_check_v4}' for queue length.")
+                    logging.debug(f"Using BullMQ v4+ key pattern '{key_to_check_v4}' for queue length.")
                     key_to_check = key_to_check_v4
                 else:
-                    print(f"Warning: Key '{key_to_check}', '{key_to_check_legacy}', or '{key_to_check_v4}' not found or not a list. Assuming length 0.")
+                    logging.warning(f"Key '{key_to_check}', '{key_to_check_legacy}', or '{key_to_check_v4}' not found or not a list. Assuming length 0.")
                     return 0
         return length
     except redis.exceptions.ResponseError as e:
         # This can happen if the key exists but is not a list type
-        print(f"Redis error when checking length of '{key_to_check}': {e}. Assuming length 0.")
+        logging.error(f"Redis error when checking length of '{key_to_check}': {e}. Assuming length 0.")
         return 0
     except Exception as e:
-        print(f"Unexpected error when checking length of '{key_to_check}': {e}. Assuming length 0.")
+        logging.error(f"Unexpected error when checking length of '{key_to_check}': {e}. Assuming length 0.")
         return 0
 
 
 if __name__ == "__main__":
     redis_conn = get_redis_connection()
     if redis_conn:
-        print(f"Monitoring Redis queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' every {POLL_INTERVAL_SECONDS} seconds...")
-        print("Press Ctrl+C to stop.")
+        logging.info(f"Monitoring Redis queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' every {POLL_INTERVAL_SECONDS} seconds...")
+        last_known_length = None  # Track queue length changes for event-driven logging
         try:
             while True:
                 length = get_queue_length(redis_conn, QUEUE_NAME_PREFIX, QUEUE_NAME)
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}:wait' length: {length}")
+
+                # Event-driven logging: only log when queue has items or length changes
+                if length > 0:
+                    logging.info(f"Queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' length: {length}")
+                elif last_known_length is not None and last_known_length > 0 and length == 0:
+                    # Log when queue drains to zero (transition event)
+                    logging.info(f"Queue '{QUEUE_NAME_PREFIX}:{QUEUE_NAME}' drained to 0")
+
+                last_known_length = length
                 time.sleep(POLL_INTERVAL_SECONDS)
         except KeyboardInterrupt:
-            print("\nMonitoring stopped by user.")
+            logging.info("Monitoring stopped by user.")
         finally:
             redis_conn.close()
-            print("Redis connection closed.")
+            logging.info("Redis connection closed.")

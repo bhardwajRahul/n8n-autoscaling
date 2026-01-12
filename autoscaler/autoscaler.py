@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Configuration from Environment Variables ---
 REDIS_HOST = os.getenv('REDIS_HOST')
@@ -30,8 +31,10 @@ SCALE_DOWN_QUEUE_THRESHOLD = int(os.getenv('SCALE_DOWN_QUEUE_THRESHOLD'))
 
 POLLING_INTERVAL_SECONDS = int(os.getenv('POLLING_INTERVAL_SECONDS'))
 COOLDOWN_PERIOD_SECONDS = int(os.getenv('COOLDOWN_PERIOD_SECONDS'))
+SUBPROCESS_TIMEOUT_SECONDS = 120  # Timeout for docker compose commands
 
 last_scale_time = 0
+last_known_replicas = None  # Track replica changes for event-driven logging
 
 def get_redis_connection():
     """Establishes a connection to Redis."""
@@ -51,14 +54,14 @@ def get_queue_length(r_conn):
         key_to_check_v4 = f"{QUEUE_NAME_PREFIX}:{QUEUE_NAME}:waiting"
         length = r_conn.llen(key_to_check_v4)
         if length is not None:
-            logging.info(f"Using BullMQ v4+ key pattern '{key_to_check_v4}' for queue length.")
+            logging.debug(f"Using BullMQ v4+ key pattern '{key_to_check_v4}' for queue length.")
             return length
 
         # Try legacy pattern (sometimes just the queue name for older Bull versions or simple lists)
         key_to_check_legacy = f"{QUEUE_NAME_PREFIX}:{QUEUE_NAME}"
         length = r_conn.llen(key_to_check_legacy)
         if length is not None:
-            logging.info(f"Using legacy key pattern '{key_to_check_legacy}' for queue length.")
+            logging.debug(f"Using legacy key pattern '{key_to_check_legacy}' for queue length.")
             return length
         
         logging.warning(f"Queue key patterns ('{key_to_check}', '{key_to_check_v4}', '{key_to_check_legacy}') not found or not a list. Assuming length 0.")
@@ -95,7 +98,7 @@ def get_current_replicas(docker_client, service_name, project_name):
         for container in service_containers:
             if container.status == 'running':
                  running_count +=1
-        logging.info(f"Found {running_count} running containers for service '{service_name}' in project '{project_name}'.")
+        logging.debug(f"Found {running_count} running containers for service '{service_name}' in project '{project_name}'.")
         return running_count
     except Exception as e:
         logging.error(f"Error getting current replicas for {service_name} in {project_name}: {e}")
@@ -122,17 +125,20 @@ def scale_service(service_name, replicas, compose_file, project_name):
     ]
     logging.info(f"Executing scaling command: {' '.join(command)}")
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=SUBPROCESS_TIMEOUT_SECONDS)
         logging.info(f"Scale command stdout: {result.stdout.strip()}")
         if result.stderr.strip():
              logging.warning(f"Scale command stderr: {result.stderr.strip()}")
         return True
+    except subprocess.TimeoutExpired:
+        logging.error(f"Timeout ({SUBPROCESS_TIMEOUT_SECONDS}s) scaling service {service_name} to {replicas}. Docker may be unresponsive.")
+        return False
     except subprocess.CalledProcessError as e:
         logging.error(f"Error scaling service {service_name} to {replicas}:")
         logging.error(f"  Command: {' '.join(e.cmd)}")
         logging.error(f"  Return Code: {e.returncode}")
-        logging.error(f"  Stdout: {e.stdout.strip()}")
-        logging.error(f"  Stderr: {e.stderr.strip()}")
+        logging.error(f"  Stdout: {e.stdout}")
+        logging.error(f"  Stderr: {e.stderr}")
         return False
     except FileNotFoundError:
         logging.error("docker-compose command not found. Ensure it's installed in the autoscaler container and in PATH.")
@@ -164,24 +170,35 @@ def scale_worker_with_runner(replicas, compose_file, project_name):
     ]
     logging.info(f"Executing scaling command: {' '.join(command)}")
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=SUBPROCESS_TIMEOUT_SECONDS)
         logging.info(f"Scale command stdout: {result.stdout.strip()}")
         if result.stderr.strip():
              logging.warning(f"Scale command stderr: {result.stderr.strip()}")
         return True
+    except subprocess.TimeoutExpired:
+        logging.error(f"Timeout ({SUBPROCESS_TIMEOUT_SECONDS}s) scaling worker+runner to {replicas}. Docker may be unresponsive.")
+        return False
     except subprocess.CalledProcessError as e:
         logging.error(f"Error scaling worker+runner to {replicas}:")
         logging.error(f"  Command: {' '.join(e.cmd)}")
         logging.error(f"  Return Code: {e.returncode}")
-        logging.error(f"  Stdout: {e.stdout.strip()}")
-        logging.error(f"  Stderr: {e.stderr.strip()}")
+        logging.error(f"  Stdout: {e.stdout}")
+        logging.error(f"  Stderr: {e.stderr}")
         return False
     except FileNotFoundError:
         logging.error("docker-compose command not found. Ensure it's installed in the autoscaler container and in PATH.")
         return False
 
+
+def get_docker_client():
+    """Creates a Docker client with connection test."""
+    client = docker.from_env()
+    client.ping()
+    return client
+
+
 def main():
-    global last_scale_time
+    global last_scale_time, last_known_replicas
     
     if not COMPOSE_PROJECT_NAME:
         logging.error("CRITICAL: COMPOSE_PROJECT_NAME environment variable is not set. Autoscaler cannot function correctly.")
@@ -190,9 +207,7 @@ def main():
 
     try:
         r_conn = get_redis_connection()
-        docker_cl = docker.from_env()
-        # Test Docker connection
-        docker_cl.ping()
+        docker_cl = get_docker_client()
         logging.info("Successfully connected to Docker daemon.")
     except Exception as e:
         logging.error(f"CRITICAL: Failed to connect to Redis or Docker: {e}")
@@ -208,14 +223,21 @@ def main():
         try:
             current_time = time.time()
             if (current_time - last_scale_time) < COOLDOWN_PERIOD_SECONDS:
-                logging.info(f"In cooldown period. Next check in {COOLDOWN_PERIOD_SECONDS - (current_time - last_scale_time):.0f}s.")
+                logging.debug(f"In cooldown period. Next check in {COOLDOWN_PERIOD_SECONDS - (current_time - last_scale_time):.0f}s.")
                 time.sleep(POLLING_INTERVAL_SECONDS) # Still sleep for polling interval
                 continue
 
             queue_len = get_queue_length(r_conn)
             current_reps = get_current_replicas(docker_cl, N8N_WORKER_SERVICE_NAME, COMPOSE_PROJECT_NAME)
 
-            logging.info(f"Queue Length: {queue_len}, Current Replicas: {current_reps}")
+            # Event-driven logging: only log queue length when there's work
+            if queue_len > 0:
+                logging.info(f"Queue Length: {queue_len}, Current Replicas: {current_reps}")
+
+            # Log replica changes (state-based tracking)
+            if last_known_replicas is not None and current_reps != last_known_replicas:
+                logging.info(f"{N8N_WORKER_SERVICE_NAME} replicas changed: {last_known_replicas} -> {current_reps}")
+            last_known_replicas = current_reps
 
             scaled = False
             if queue_len > SCALE_UP_QUEUE_THRESHOLD and current_reps < MAX_REPLICAS:
@@ -231,18 +253,36 @@ def main():
                     last_scale_time = current_time
                     scaled = True
             
-            if not scaled:
-                logging.info("No scaling action needed.")
+            # Removed "No scaling action needed" log - silent when idle
 
         except redis.exceptions.ConnectionError as e:
             logging.error(f"Redis connection error: {e}. Retrying connection...")
-            time.sleep(5) # Wait before retrying Redis connection
+            time.sleep(5)
             try:
                 r_conn = get_redis_connection()
+                logging.info("Successfully reconnected to Redis.")
             except Exception as recon_e:
                 logging.error(f"Failed to reconnect to Redis: {recon_e}")
+        except docker.errors.APIError as e:
+            logging.error(f"Docker API error: {e}. Retrying connection...")
+            time.sleep(5)
+            try:
+                docker_cl = get_docker_client()
+                logging.info("Successfully reconnected to Docker daemon.")
+            except Exception as recon_e:
+                logging.error(f"Failed to reconnect to Docker: {recon_e}")
         except Exception as e:
             logging.error(f"Error in autoscaler main loop: {e}", exc_info=True)
+            # Check if Docker connection is still valid
+            try:
+                docker_cl.ping()
+            except Exception:
+                logging.warning("Docker connection lost. Attempting reconnection...")
+                try:
+                    docker_cl = get_docker_client()
+                    logging.info("Successfully reconnected to Docker daemon.")
+                except Exception as recon_e:
+                    logging.error(f"Failed to reconnect to Docker: {recon_e}")
 
         time.sleep(POLLING_INTERVAL_SECONDS)
 
