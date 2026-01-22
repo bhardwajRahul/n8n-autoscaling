@@ -268,6 +268,43 @@ To add command-line tools (like ImageMagick, tesseract, poppler, etc.):
 
 **Note:** The runner image uses a multi-stage build. System packages are installed in an Alpine builder stage, then binaries and libraries are copied to the final `n8nio/runners` image. This is necessary because the base runners image doesn't include `apk`.
 
+### Installing Community Nodes
+
+Community nodes are third-party n8n nodes that add new integrations (e.g., n8n-nodes-discord, n8n-nodes-notion). They're different from Code node packages - they add entirely new node types to your workflow editor.
+
+**Via the n8n UI (Recommended):**
+
+1. Ensure community packages are enabled (they are by default in this build):
+   ```env
+   N8N_COMMUNITY_PACKAGES_ENABLED=true
+   ```
+
+2. In n8n, go to **Settings** > **Community nodes**
+
+3. Click **Install** and enter the npm package name (e.g., `n8n-nodes-discord`)
+
+4. The node will be installed to the shared volume and available to all workers automatically
+
+**Pre-installing in Dockerfile (for consistent deployments):**
+
+1. Edit `Dockerfile` and add the community node package:
+   ```dockerfile
+   # Install community nodes
+   RUN cd /usr/local/lib/node_modules/n8n && \
+       npm install n8n-nodes-discord n8n-nodes-notion
+   ```
+
+2. Rebuild all n8n images:
+   ```bash
+   docker compose build --no-cache n8n n8n-webhook n8n-worker
+   docker compose up -d
+   ```
+
+**Important notes:**
+- Community nodes are installed into **n8n itself**, not the task runners
+- The `n8n_main` volume is shared between `n8n` and `n8n-worker`, so nodes installed via UI are automatically available to workers
+- If a community node requires system dependencies, you may need to add them to the main `Dockerfile` (not `Dockerfile.runner`)
+
 ## Monitoring
 
 The system includes:
