@@ -145,7 +145,9 @@ The autoscaler:
 
 ## Adding External Packages
 
-The following packages are pre-installed and ready to use in Code nodes:
+### Pre-installed JavaScript Packages
+
+The following npm packages are pre-installed and ready to use in JavaScript Code nodes:
 
 | Package | Description |
 |---------|-------------|
@@ -158,9 +160,32 @@ The following packages are pre-installed and ready to use in Code nodes:
 | `ajv-formats` | Additional AJV formats |
 | `moment` | Date/time manipulation |
 
-### Adding More Packages
+### Pre-installed Python Packages
 
-To add additional npm packages:
+The following pip packages are pre-installed for Python Code nodes:
+
+| Package | Description |
+|---------|-------------|
+| `requests` | HTTP library |
+| `pillow` | Image processing (PIL) |
+| `pandas` | Data analysis |
+| `numpy` | Numerical computing |
+
+### Pre-installed System Utilities
+
+The following command-line tools are available via `subprocess`:
+
+| Tool | Description |
+|------|-------------|
+| `chromium` | Headless browser |
+| `ffmpeg` / `ffprobe` | Video/audio processing |
+| `imagemagick` | Image manipulation (`magick`, `convert`, `identify`, `mogrify`, `composite`) |
+| `graphicsmagick` | Image manipulation (`gm`) |
+| `git` | Version control |
+
+### Adding More npm Packages
+
+To add additional npm packages for JavaScript Code nodes:
 
 1. Edit `Dockerfile.runner` and add packages to the pnpm install:
    ```dockerfile
@@ -181,6 +206,67 @@ To add additional npm packages:
    docker compose build --no-cache n8n-task-runner n8n-worker-runner
    docker compose up -d
    ```
+
+### Adding More Python Packages
+
+To add additional pip packages for Python Code nodes:
+
+1. Edit `Dockerfile.runner` and add packages to the uv pip install:
+   ```dockerfile
+   RUN /usr/local/bin/uv pip install --python /opt/runners/task-runner-python/.venv/bin/python --no-cache \
+       requests \
+       pillow \
+       pandas \
+       numpy \
+       your-package-here
+   ```
+
+2. Edit `n8n-task-runners.json` and update the Python runner's env-overrides:
+   ```json
+   "N8N_RUNNERS_EXTERNAL_ALLOW": "requests,pillow,PIL,pandas,numpy,your-package-here"
+   ```
+
+3. If your package needs stdlib modules (like `subprocess`), add them too:
+   ```json
+   "N8N_RUNNERS_STDLIB_ALLOW": "datetime,json,math,os,re,io,base64,hashlib,urllib,subprocess"
+   ```
+
+4. Rebuild:
+   ```bash
+   docker compose build --no-cache n8n-task-runner n8n-worker-runner
+   docker compose up -d
+   ```
+
+### Adding System Utilities (Linux packages)
+
+To add command-line tools (like ImageMagick, tesseract, poppler, etc.):
+
+1. Edit `Dockerfile.runner` and add packages to the Alpine builder stage:
+   ```dockerfile
+   FROM alpine:3.23 AS builder
+
+   RUN apk add --no-cache \
+       chromium \
+       ... \
+       imagemagick \
+       tesseract-ocr \
+       poppler-utils
+   ```
+
+2. Add COPY commands to copy the binaries to the final image:
+   ```dockerfile
+   # Copy binaries from builder
+   COPY --from=builder /usr/bin/tesseract /usr/bin/tesseract
+   COPY --from=builder /usr/bin/pdftotext /usr/bin/pdftotext
+   ```
+
+3. Rebuild:
+   ```bash
+   docker compose build --no-cache n8n-task-runner n8n-worker-runner
+   docker compose up -d
+   ```
+
+**Note:** The runner image uses a multi-stage build. System packages are installed in an Alpine builder stage, then binaries and libraries are copied to the final `n8nio/runners` image. This is necessary because the base runners image doesn't include `apk`.
 
 ## Monitoring
 

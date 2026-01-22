@@ -14,7 +14,8 @@ RUN apk add --no-cache \
     ffmpeg \
     git \
     openssh-client \
-    graphicsmagick
+    graphicsmagick \
+    imagemagick
 
 # Stage 2: Copy to runners image
 FROM n8nio/runners:latest
@@ -31,6 +32,12 @@ COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
 COPY --from=builder /usr/bin/ffprobe /usr/bin/ffprobe
 COPY --from=builder /usr/bin/git /usr/bin/git
 COPY --from=builder /usr/bin/gm /usr/bin/gm
+# ImageMagick binaries
+COPY --from=builder /usr/bin/magick /usr/bin/magick
+COPY --from=builder /usr/bin/convert /usr/bin/convert
+COPY --from=builder /usr/bin/identify /usr/bin/identify
+COPY --from=builder /usr/bin/mogrify /usr/bin/mogrify
+COPY --from=builder /usr/bin/composite /usr/bin/composite
 
 # Create symlink for chromium-browser wrapper script
 RUN ln -sf /usr/lib/chromium/chromium /usr/bin/chromium
@@ -45,6 +52,13 @@ RUN /usr/local/bin/node /usr/local/lib/node_modules/corepack/dist/corepack.js pn
     puppeteer-extra-plugin-stealth \
     playwright-core \
     playwright-extra
+
+# Install Python packages in the task runner's venv
+RUN /usr/local/bin/uv pip install --python /opt/runners/task-runner-python/.venv/bin/python --no-cache \
+    requests \
+    pillow \
+    pandas \
+    numpy
 
 # Copy custom task runner config that:
 # - Removes --disable-proto=delete flag (allows puppeteer/playwright to work)
